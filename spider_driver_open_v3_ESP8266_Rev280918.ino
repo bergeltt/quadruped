@@ -29,6 +29,8 @@
 
 /* Includes ------------------------------------------------------------------*/
 
+#define DEBUG
+
 #include <Adafruit_PWMServoDriver.h>
 #include <Ticker.h>
 #include <SerialCommand.h>
@@ -56,9 +58,11 @@ const float y_default = x_default;
 /* variables for movement ----------------------------------------------------*/
 volatile float site_now[4][3];    //real-time coordinates of the end of each leg
 volatile float site_expect[4][3]; //expected coordinates of the end of each leg
+const int servo_update_rate_ms = 20;
+volatile unsigned long last_servo_update_time = 0;
 float temp_speed[4][3];           //each axis' speed, needs to be recalculated before each movement
 float move_speed = 1.4;           //movement speed
-float speed_multiple = 1;         //movement speed multiple
+float speed_multiple = 1.0f / servo_update_rate_ms;         //movement speed multiple
 const float spot_turn_speed = 4;
 const float leg_move_speed = 8;
 const float body_move_speed = 3;
@@ -126,12 +130,9 @@ void setup()
     }
   }
   //start servo service
-  ticker.attach_ms(20, servo_service);
+  ticker.attach_ms(servo_update_rate_ms, servo_service);
   Serial.println("Servo service started");
-  //initialize servos
-  // servo_attach();
-  Serial.println("Servos initialized");
-  Serial.println("Robot initialization Complete");
+
   sit();
   b_init();
 }
@@ -186,8 +187,11 @@ void loop()
   {
     turn_right(1);
   }
-  Serial.println(lastComm);
-  // turn_right(1); //test
+
+  if (lastComm != "")
+  {
+    Serial.println(lastComm);
+  }
 }
 
 // w 0 2: body init
@@ -234,7 +238,7 @@ void action_cmd(void)
 {
   char *arg;
   int action_mode, n_step;
-  Serial.println("Action:");
+  Serial.print("Action: ");
   arg = SCmd.next();
   action_mode = atoi(arg);
   arg = SCmd.next();
@@ -244,7 +248,8 @@ void action_cmd(void)
   switch (action_mode)
   {
   case W_FORWARD:
-    Serial.println("Step forward");
+    Serial.print("Step forward ");
+    Serial.println(n_step);
     lastComm = "FWD";
     if (!is_stand())
       stand();
@@ -252,7 +257,8 @@ void action_cmd(void)
     break;
 
   case W_BACKWARD:
-    Serial.println("Step back");
+    Serial.print("Step back ");
+    Serial.println(n_step);
     lastComm = "BWD";
     if (!is_stand())
       stand();
@@ -260,7 +266,8 @@ void action_cmd(void)
     break;
 
   case W_LEFT:
-    Serial.println("Turn left");
+    Serial.print("Turn left ");
+    Serial.println(n_step);
     lastComm = "LFT";
     if (!is_stand())
       stand();
@@ -268,7 +275,8 @@ void action_cmd(void)
     break;
 
   case W_RIGHT:
-    Serial.println("Turn right");
+    Serial.print("Turn right ");
+    Serial.println(n_step);
     lastComm = "RGT";
     if (!is_stand())
       stand();
@@ -276,35 +284,43 @@ void action_cmd(void)
     break;
 
   case W_STAND_SIT:
-    Serial.println("1:up,0:dn");
+    Serial.print("Stand or Sit: ");
     lastComm = "";
     if (n_step)
+    {
+      Serial.println("Stand");
       stand();
+    }
     else
+    {
+      Serial.println("Sit");
       sit();
+    }
     break;
 
   case W_SHAKE:
-    Serial.println("Hand shake");
+    Serial.print("Hand shake ");
+    Serial.println(n_step);
     lastComm = "";
     hand_shake(n_step);
     break;
 
   case W_WAVE:
-    Serial.println("Hand wave");
+    Serial.print("Hand wave ");
+    Serial.println(n_step);
     lastComm = "";
     hand_wave(n_step);
     break;
 
   case W_DANCE:
-    Serial.println("Lets rock baby");
+    Serial.print("Dance ");
+    Serial.println(n_step);
     lastComm = "";
-    //body_dance(n_step);
-    body_dance(10);
+    body_dance(n_step);
     break;
 
   case W_SET:
-    Serial.println("Higher");
+    Serial.println("Set");
     FLElbow = 0;
     FRElbow = 0;
     RLElbow = 0;
@@ -469,12 +485,14 @@ bool is_stand(void)
    ---------------------------------------------------------------------------*/
 void sit(void)
 {
+  Serial.println("sit start");
   move_speed = stand_seat_speed;
   for (int leg = 0; leg < 4; leg++)
   {
     set_site(leg, KEEP, KEEP, z_boot);
   }
   wait_all_reach();
+  Serial.println("sit end");
 }
 
 /*
@@ -497,12 +515,14 @@ void stand(void)
    ---------------------------------------------------------------------------*/
 void b_init(void)
 {
+  Serial.println("b_init start");
   //stand();
   set_site(0, x_default, y_default, z_default);
   set_site(1, x_default, y_default, z_default);
   set_site(2, x_default, y_default, z_default);
   set_site(3, x_default, y_default, z_default);
   wait_all_reach();
+  Serial.println("b_init end");
 }
 
 /*
@@ -979,6 +999,7 @@ void body_dance(int i)
 void servo_service(void)
 {
   sei();
+  last_servo_update_time = millis();
 
   for (int i = 0; i < 4; i++)
   {
@@ -990,17 +1011,28 @@ void servo_service(void)
 
       if (now != expect)
       {
-        const float speed = temp_speed[i][j];
-        if (fabs(expect - now) >= fabs(speed))
+        changed = true;
+        const float delta = temp_speed[i][j] * servo_update_rate_ms;
+        if (fabs(expect - now) >= fabs(delta))
         {
-          now += speed;
-          changed = true;
+          now += delta;
         }
         else
         {
           now = expect;
-          changed = true;
         }
+#ifdef DEBUG
+        Serial.print("moving leg ");
+        Serial.print(i);
+        Serial.print(" joint ");
+        Serial.print(j);
+        Serial.print(" from ");
+        Serial.print(now);
+        Serial.print(" to ");
+        Serial.print(expect);
+        Serial.print(" at ");
+        Serial.println(temp_speed[i][j]);
+#endif        
       }
     }
 
@@ -1061,11 +1093,41 @@ void wait_reach(int leg)
 {
   while (1)
   {
-    if (site_now[leg][0] == site_expect[leg][0])
-      if (site_now[leg][1] == site_expect[leg][1])
-        if (site_now[leg][2] == site_expect[leg][2])
-          break;
-    yield();
+    int waitingOnJoint = -1;
+    for (int joint = 0; joint < 3; ++joint)
+    {
+      if (site_now[leg][joint] != site_expect[leg][joint])
+      {
+        waitingOnJoint = joint;
+        break;
+      }
+    }
+
+    if (waitingOnJoint < 0)
+    {
+#ifdef DEBUG      
+      Serial.print("wait_reach finished leg ");
+      Serial.println(leg);  
+#endif
+      break;
+    }
+    else
+    {
+      const unsigned long timeSinceLastServoUpdate = (last_servo_update_time > 0) ? millis() - last_servo_update_time : 0;
+      const unsigned long timeUntilNextServoUpdate = (servo_update_rate_ms >= timeSinceLastServoUpdate) ? servo_update_rate_ms - timeSinceLastServoUpdate : 0UL;
+      const unsigned long remainingMovementTimeMS = ceil(fabs(site_expect[leg][waitingOnJoint] - site_now[leg][waitingOnJoint]) / fabs(temp_speed[leg][waitingOnJoint]));
+      const unsigned long waitTimeMS = max(timeUntilNextServoUpdate, remainingMovementTimeMS);
+#ifdef DEBUG      
+      Serial.print("wait_reach waiting on leg ");
+      Serial.print(leg);  
+      Serial.print(" joint ");
+      Serial.print(waitingOnJoint);
+      Serial.print(" for ");
+      Serial.print(waitTimeMS);
+      Serial.println(" ms");
+#endif      
+      delay(waitTimeMS);
+    }
   }
 }
 
@@ -1076,7 +1138,9 @@ void wait_reach(int leg)
 void wait_all_reach(void)
 {
   for (int i = 0; i < 4; i++)
+  {
     wait_reach(i);
+  }    
 }
 
 /*
@@ -1140,7 +1204,6 @@ void polar_to_servo(int leg, float alpha, float beta, float gamma)
     break;
   }
   }
-
   const int AL = min(max((850.0f / 180.0f) * alpha, 125.0f), 580.0f);
   pwm.setPWM(servo_pin[leg][0], 0, AL);
 
